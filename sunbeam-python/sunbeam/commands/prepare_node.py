@@ -139,7 +139,15 @@ if grep -E -q 'NO_PROXY=' /etc/environment; then
                     /etc/environment
     done
 fi
+
+# Check if the node has any existing cni/multus configuration
+# If there is, it may affect the install later.
+if [ -d /etc/cni ]; then
+    echo 'ERROR: existing CNI config detected in /etc/cni - this may cause issues'
+    exit 1
+fi
 """
+
 
 COMMON_TEMPLATE = f"""
 # Connect snap to the ssh-keys interface to allow
