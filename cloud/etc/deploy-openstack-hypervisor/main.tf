@@ -98,24 +98,6 @@ resource "juju_integration" "hypervisor-certs" {
   }
 }
 
-moved {
-  from = juju_integration.hypervisor-ovn-proxy[0]
-  to   = juju_integration.hypervisor-ovn-proxy
-}
-
-resource "juju_integration" "hypervisor-ovn-proxy" {
-  model_uuid = data.juju_model.machine_model.uuid
-  application {
-    name     = juju_application.openstack-hypervisor.name
-    endpoint = "ovsdb-cms"
-  }
-
-  application {
-    name     = "sunbeam-ovn-proxy"
-    endpoint = "ovsdb-cms"
-  }
-}
-
 resource "juju_integration" "hypervisor-ceilometer" {
   count      = (var.ceilometer-offer-url != null) ? 1 : 0
   model_uuid = data.juju_model.machine_model.uuid
