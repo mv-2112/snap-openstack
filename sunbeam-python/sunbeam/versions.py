@@ -23,17 +23,16 @@ SUPPORTED_RELEASE = "noble"
 JUJU_CHANNEL = "3.6/stable"
 JUJU_BASE = "ubuntu@24.04"
 OPENSTACK_CHANNEL = f"{determine_version()}/stable"
-OVN_CHANNEL = "26.03/stable"
 RABBITMQ_CHANNEL = "3.12/stable"
 TRAEFIK_CHANNEL = "latest/stable"
-MICROCEPH_CHANNEL = "squid/stable"
-MICROOVN_CHANNEL = "25.03/stable"
+MICROCEPH_CHANNEL = "tentacle/stable"
+MICROOVN_CHANNEL = "26.03/stable"
 ROLE_DISTRIBUTOR_CHANNEL = "latest/stable"
 MYSQL_CHANNEL = "8.0/stable"
 CERT_AUTH_CHANNEL = "1/stable"
 MANUAL_TLS_CERTIFICATES_CHANNEL = "1/stable"
 BIND_CHANNEL = "9/stable"
-VAULT_CHANNEL = "1.18/stable"
+VAULT_CHANNEL = "2.0/stable"
 CONSUL_CHANNEL = "1.19/stable"
 K8S_CHANNEL = "1.32/stable"
 MULTUS_CHANNEL = "latest/stable"
@@ -58,10 +57,6 @@ OPENSTACK_CHARMS_K8S = {
     "neutron-k8s": OPENSTACK_CHANNEL,
     "nova-k8s": OPENSTACK_CHANNEL,
     "placement-k8s": OPENSTACK_CHANNEL,
-}
-OVN_CHARMS_K8S = {
-    "ovn-central-k8s": OVN_CHANNEL,
-    "ovn-relay-k8s": OVN_CHANNEL,
 }
 MYSQL_CHARMS_K8S = {
     "mysql-k8s": MYSQL_CHANNEL,
@@ -92,7 +87,6 @@ MACHINE_CHARMS = {
 
 K8S_CHARMS: dict[str, str] = {}
 K8S_CHARMS |= OPENSTACK_CHARMS_K8S
-K8S_CHARMS |= OVN_CHARMS_K8S
 K8S_CHARMS |= MYSQL_CHARMS_K8S
 K8S_CHARMS |= MISC_CHARMS_K8S
 
@@ -270,7 +264,11 @@ DEPLOY_MICROOVN_TFVAR_MAP: VarMap = {
             "revision": "charm_sunbeam_ovn_proxy_revision",
             "config": "charm_sunbeam_ovn_proxy_config",
         },
-    }
+    },
+    # resolved arm64 revision.
+    "preserve": [
+        "charm_openstack_network_agents_arm64_revision",
+    ],
 }
 DEPLOY_OPENSTACK_HYPERVISOR_TFVAR_MAP: VarMap = {
     "charms": {

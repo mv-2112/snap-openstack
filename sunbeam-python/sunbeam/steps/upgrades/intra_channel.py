@@ -35,7 +35,9 @@ from sunbeam.steps.k8s import (
     EnsureL2AdvertisementByHostStep,
 )
 from sunbeam.steps.microceph import DeployMicrocephApplicationStep
-from sunbeam.steps.microovn import DeployMicroOVNApplicationStep
+from sunbeam.steps.microovn import (
+    DeployMicroOVNApplicationStep,
+)
 from sunbeam.steps.mysql import MySQLCharmUpgradeStep, ReapplyMySQLTerraformPlanStep
 from sunbeam.steps.openstack import (
     OpenStackPatchLoadBalancerServicesIPPoolStep,
@@ -521,9 +523,7 @@ class LatestInChannelCoordinator(UpgradeCoordinator):
             )
 
         ovn_manager = self.deployment.get_ovn_manager()
-        plan.extend(
-            [OpenStackPatchLoadBalancerServicesIPStep(self.client, ovn_manager)]
-        )
+        plan.extend([OpenStackPatchLoadBalancerServicesIPStep(self.client)])
 
         network_nodes = []
         microovn_roles = ovn_manager.get_roles_for_microovn()

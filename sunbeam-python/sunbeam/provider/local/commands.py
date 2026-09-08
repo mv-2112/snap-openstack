@@ -28,7 +28,6 @@ from sunbeam.commands.configure import (
 )
 from sunbeam.commands.dashboard import retrieve_dashboard_url
 from sunbeam.commands.proxy import PromptForProxyStep
-from sunbeam.core import ovn
 from sunbeam.core.checks import (
     Check,
     DaemonGroupCheck,
@@ -92,7 +91,6 @@ from sunbeam.provider.local.steps import (
     LocalConfigDPDKStep,
     LocalConfigSRIOVStep,
     LocalEndpointsConfigurationStep,
-    LocalSetHypervisorUnitsOptionsStep,
     LocalSetOpenStackNetworkAgentsStep,
     LocalUserQuestions,
 )
@@ -151,7 +149,6 @@ from sunbeam.steps.k8s import (
     AddK8SCloudStep,
     AddK8SCredentialStep,
     CheckMysqlK8SDistributionStep,
-    CheckOvnK8SDistributionStep,
     CheckRabbitmqK8SDistributionStep,
     CordonK8SUnitStep,
     DeployK8SApplicationStep,
@@ -177,7 +174,6 @@ from sunbeam.steps.microovn import (
     ReapplyMicroOVNOptionalIntegrationsStep,
     ReapplyMicroOVNTerraformPlanStep,
     RemoveMicroOVNUnitsStep,
-    SetOvnProviderStep,
 )
 from sunbeam.steps.openstack import (
     DeployControlPlaneStep,
@@ -751,7 +747,6 @@ def bootstrap(  # noqa: C901
     plan.append(ClusterInitStep(client, roles_to_str_list(roles), 0, management_cidr))
     plan.append(SyncFeatureGatesToCluster(client))
     plan.append(SaveManagementCidrStep(client, management_cidr))
-    plan.append(SetOvnProviderStep(client, snap))
     plan.append(AddManifestStep(client, manifest_path))
     plan.append(
         PromptForProxyStep(
@@ -982,7 +977,7 @@ def bootstrap(  # noqa: C901
     plan2: list[BaseStep] = []
 
     if is_control_node or is_region_controller:
-        plan2.append(OpenStackPatchLoadBalancerServicesIPStep(client, ovn_manager))
+        plan2.append(OpenStackPatchLoadBalancerServicesIPStep(client))
 
     if not is_region_controller:
         # NOTE(jamespage):
@@ -1561,6 +1556,7 @@ def join(  # noqa: C901
                 jhelper,
                 deployment.openstack_machines_model,
                 name,
+                reconcile_existing=True,
             ),
         )
         plan4.append(
@@ -1626,17 +1622,16 @@ def join(  # noqa: C901
                 deployment.get_ovn_manager(),
             )
         )
-        if ovn_manager.is_network_agent_dataplane_node(roles) or microovn_necessary:
-            plan4.append(
-                LocalSetOpenStackNetworkAgentsStep(
-                    client,
-                    name,
-                    jhelper,
-                    deployment.openstack_machines_model,
-                    join_mode=True,
-                    manifest=manifest,
-                ),
-            )
+        plan4.append(
+            LocalSetOpenStackNetworkAgentsStep(
+                client,
+                name,
+                jhelper,
+                deployment.openstack_machines_model,
+                join_mode=True,
+                manifest=manifest,
+            ),
+        )
 
     if is_storage_node:
         # Check if this is the first storage node joining
@@ -1753,19 +1748,6 @@ def join(  # noqa: C901
                 ),
             ]
         )
-        if not microovn_necessary:
-            # Only set local settings if MicroOVN is not deployed on the
-            # current node
-            plan4.append(
-                LocalSetHypervisorUnitsOptionsStep(
-                    client,
-                    name,
-                    jhelper,
-                    deployment.openstack_machines_model,
-                    join_mode=True,
-                    manifest=manifest,
-                )
-            )
         plan4.extend(
             [
                 LocalConfigSRIOVStep(
@@ -1901,13 +1883,6 @@ def remove(ctx: click.Context, name: str, force: bool, show_hints: bool) -> None
                 deployment.openstack_machines_model,
                 force=force,
             ),
-            CheckOvnK8SDistributionStep(
-                client,
-                name,
-                jhelper,
-                deployment.openstack_machines_model,
-                force=force,
-            ),
             CheckRabbitmqK8SDistributionStep(
                 client,
                 name,
@@ -1978,6 +1953,7 @@ def remove(ctx: click.Context, name: str, force: bool, show_hints: bool) -> None
     if microovn_machine_ids:
         manifest = deployment.get_manifest()
         role_distributor_tfhelper = deployment.get_tfhelper("role-distributor-plan")
+        microovn_tfhelper = deployment.get_tfhelper("microovn-plan")
         remove_k8s_unit_index = next(
             i for i, step in enumerate(plan) if isinstance(step, CordonK8SUnitStep)
         )
@@ -1997,6 +1973,15 @@ def remove(ctx: click.Context, name: str, force: bool, show_hints: bool) -> None
                     jhelper,
                     manifest,
                     deployment.openstack_machines_model,
+                ),
+                TerraformInitStep(microovn_tfhelper),
+                ReapplyMicroOVNTerraformPlanStep(
+                    client,
+                    microovn_tfhelper,
+                    jhelper,
+                    manifest,
+                    deployment.openstack_machines_model,
+                    deployment.get_ovn_manager(),
                 ),
             ]
         )
@@ -2107,25 +2092,8 @@ def configure_cmd(
         ]
     )
 
-    is_microovn_deployment = (
-        deployment.get_ovn_manager().get_provider() == ovn.OvnProvider.MICROOVN
-    )
-
     if "compute" in node["role"]:
         tfhelper_hypervisor = deployment.get_tfhelper("hypervisor-plan")
-        if not is_microovn_deployment:
-            plan.append(
-                LocalSetHypervisorUnitsOptionsStep(
-                    client,
-                    name,
-                    jhelper,
-                    deployment.openstack_machines_model,
-                    # Accept preseed file but do not allow 'accept_defaults' as nic
-                    # selection may vary from machine to machine and is potentially
-                    # destructive if it takes over an unintended nic.
-                    manifest=manifest,
-                )
-            )
         plan.append(TerraformInitStep(tfhelper_hypervisor))
         plan.append(
             ReapplyHypervisorTerraformPlanStep(
@@ -2137,10 +2105,7 @@ def configure_cmd(
             )
         )
 
-    if "network" in node["role"] or (
-        is_microovn_deployment
-        and ("compute" in node["role"] or "control" in node["role"])
-    ):
+    if {"control", "compute", "network"}.intersection(node["role"]):
         role_distributor_tfhelper = deployment.get_tfhelper("role-distributor-plan")
         microovn_tfhelper = deployment.get_tfhelper("microovn-plan")
         plan.append(TerraformInitStep(role_distributor_tfhelper))

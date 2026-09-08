@@ -13,7 +13,6 @@ from lightkube import ApiError
 from maas.client.bones import CallError
 
 import sunbeam.provider.maas.steps as maas_steps
-from sunbeam.core import ovn
 from sunbeam.core.checks import DiagnosticResultType
 from sunbeam.core.deployment import Networks
 from sunbeam.core.deployments import DeploymentsConfig
@@ -38,6 +37,7 @@ from sunbeam.provider.maas.steps import (
     MaasAddMachinesToClusterdStep,
     MaasBootstrapJujuStep,
     MaasConfigDPDKStep,
+    MaasConfigSRIOVStep,
     MaasConfigureMicrocephOSDStep,
     MaasCreateLoadBalancerIPPoolsStep,
     MaasDeployInfraMachinesStep,
@@ -58,6 +58,7 @@ from sunbeam.provider.maas.steps import (
     ZonesCheck,
 )
 from sunbeam.steps.juju import RemoveJujuMachineStep
+from sunbeam.steps.microovn import ReapplyMicroOVNTerraformPlanStep
 from sunbeam.steps.role_distributor import (
     ReapplyRoleDistributorApplicationStep,
     RemoveRoleDistributorUnitsStep,
@@ -65,22 +66,10 @@ from sunbeam.steps.role_distributor import (
 
 
 class TestMaasConfigureCommand:
-    @pytest.mark.parametrize(
-        "provider,expected_names",
-        [
-            (ovn.OvnProvider.OVN_K8S, ["net-1"]),
-            (
-                ovn.OvnProvider.MICROOVN,
-                ["net-1", "compute-1", "control-1"],
-            ),
-        ],
-    )
-    def test_network_agents_match_ovn_provider(
+    def test_network_agents_include_all_microovn_nodes(
         self,
         mocker,
         tmp_path,
-        provider,
-        expected_names,
     ):
         client = Mock()
         nodes_by_role = {
@@ -94,14 +83,10 @@ class TestMaasConfigureCommand:
         tfhelper.env = {}
         tfhelper.path = tmp_path
 
-        ovn_manager = Mock()
-        ovn_manager.get_provider.return_value = provider
-
         deployment = Mock()
         deployment.get_client.return_value = client
         deployment.get_manifest.return_value = Mock(core={}, features={})
         deployment.get_tfhelper.return_value = tfhelper
-        deployment.get_ovn_manager.return_value = ovn_manager
         deployment.juju_controller = "controller"
         deployment.juju_account = "account"
         deployment.openstack_machines_model = "openstack-machines"
@@ -137,7 +122,7 @@ class TestMaasConfigureCommand:
             for step in plan
             if isinstance(step, maas_steps.MaasSetOpenStackNetworkAgentsStep)
         )
-        assert network_agents_step.names == expected_names
+        assert network_agents_step.names == ["net-1", "compute-1", "control-1"]
 
 
 class TestAddMaasDeployment:
@@ -1288,10 +1273,10 @@ class TestMaasDeployMachinesStep:
         self, maas_deploy_machines_step, step_context
     ):
         maas_deploy_machines_step.client.cluster.list_nodes.return_value = [
-            {"name": "test_node", "machineid": 1}
+            {"name": "test_node", "machineid": 1, "systemid": "abc"}
         ]
         maas_deploy_machines_step.jhelper.get_machines.return_value = {
-            "2": Mock(hostname="test_node")
+            "2": Mock(hostname="test_node", instance_id="abc")
         }
         result = maas_deploy_machines_step.is_skip(step_context)
         assert result.result_type == ResultType.FAILED
@@ -1300,6 +1285,29 @@ class TestMaasDeployMachinesStep:
             " expected the id 1."
         )
         assert result.message == msg
+
+    def test_is_skip_matches_dpu_by_system_id_when_hostname_differs(
+        self, maas_deploy_machines_step, step_context
+    ):
+        maas_deploy_machines_step.client.cluster.list_nodes.return_value = [
+            {
+                "name": "pc8a-rb3-n4-dpu",
+                "machineid": -1,
+                "systemid": "8fhqbs",
+                "is_dpu": True,
+            }
+        ]
+        maas_deploy_machines_step.jhelper.get_machines.return_value = {
+            "54": Mock(
+                hostname="packer-ubuntu",
+                instance_id="8fhqbs",
+                display_name="pc8a-rb3-n4-dpu",
+            )
+        }
+        result = maas_deploy_machines_step.is_skip(step_context)
+        assert result.result_type == ResultType.COMPLETED
+        assert maas_deploy_machines_step.nodes_to_deploy == []
+        assert len(maas_deploy_machines_step.nodes_to_update) == 1
 
     def test_is_skip_with_nodes_to_deploy(
         self, maas_deploy_machines_step, step_context
@@ -2524,6 +2532,40 @@ class TestRemoveNodeRoleDistributor:
     @patch("sunbeam.provider.maas.commands.JujuHelper")
     @patch("sunbeam.provider.maas.commands.run_preflight_checks")
     @patch("sunbeam.provider.maas.commands.run_plan")
+    def test_remove_reapplies_microovn_terraform_plan_after_cluster_removal(
+        self,
+        run_plan_cmd,
+        run_preflight,
+        juju_helper,
+    ):
+        deployment = Mock()
+        deployment.openstack_machines_model = "openstack-machines"
+        deployment.get_manifest.return_value = Mock()
+        deployment.get_tfhelper.return_value = Mock()
+        deployment.get_ovn_manager.return_value.get_machines.return_value = ["1"]
+
+        runner = CliRunner()
+        result = runner.invoke(remove_node, ["node-1"], obj=deployment)
+
+        assert result.exit_code == 0, result.output
+
+        plan = run_plan_cmd.call_args_list[1][0][0]
+        clusterd_remove_idx = next(
+            i
+            for i, step in enumerate(plan)
+            if isinstance(step, MaasRemoveMachineFromClusterdStep)
+        )
+        microovn_reapply_idx = next(
+            i
+            for i, step in enumerate(plan)
+            if isinstance(step, ReapplyMicroOVNTerraformPlanStep)
+        )
+
+        assert clusterd_remove_idx < microovn_reapply_idx
+
+    @patch("sunbeam.provider.maas.commands.JujuHelper")
+    @patch("sunbeam.provider.maas.commands.run_preflight_checks")
+    @patch("sunbeam.provider.maas.commands.run_plan")
     def test_remove_skips_role_distributor_when_microovn_has_no_machines(
         self,
         run_plan_cmd,
@@ -2547,6 +2589,9 @@ class TestRemoveNodeRoleDistributor:
         )
         assert not any(
             isinstance(step, ReapplyRoleDistributorApplicationStep) for step in plan
+        )
+        assert not any(
+            isinstance(step, ReapplyMicroOVNTerraformPlanStep) for step in plan
         )
 
 
@@ -2604,3 +2649,80 @@ class TestParseImageNameFromTags:
 
         with pytest.raises(ValueError, match="image name is empty"):
             parse_image_name_from_tags(["network", "dpu-image-"])
+
+
+class TestMaasConfigSRIOVStepDPU:
+    def _step(self):
+        with patch.object(
+            maas_steps.maas_client.MaasClient, "from_deployment", return_value=Mock()
+        ):
+            step = MaasConfigSRIOVStep(
+                deployment=Mock(),
+                client=Mock(),
+                jhelper=Mock(),
+                model="openstack-machines",
+                manifest=None,
+            )
+        return step
+
+    def test_dpu_parent_host_allowedlists_only_vf_nics_as_remote_managed(self):
+        step = self._step()
+        compute_machines = [{"system_id": "host-sid", "hostname": "compute-4"}]
+
+        dpu_machines = [
+            {"hostname": "dpu-1", "is_dpu": True, "parent_system_id": "host-sid"}
+        ]
+        # Only the VF (product_name has "Virtual Function") is remote-managed;
+        # the PF is ignored.
+        host_nics = {
+            "nics": [
+                {
+                    "name": "ens1f0np0",
+                    "pci_address": "0000:41:00.0",
+                    "vendor_id": "0x15b3",
+                    "product_id": "0xa2dc",
+                    "product_name": "BlueField-3 integrated ConnectX-7",
+                },
+                {
+                    "name": "ens1f0v0",
+                    "pci_address": "0000:41:00.3",
+                    "vendor_id": "0x15b3",
+                    "product_id": "0x101e",
+                    "product_name": "ConnectX Family mlx5Gen Virtual Function",
+                },
+            ]
+        }
+
+        with (
+            patch.object(
+                maas_steps.maas_client, "list_machines", return_value=dpu_machines
+            ),
+            patch.object(maas_steps.nic_utils, "fetch_nics", return_value=host_nics),
+        ):
+            pci_allowedlist, _ = step._get_pci_config(compute_machines)
+
+        assert pci_allowedlist == [
+            {
+                "address": "0000:41:00.3",
+                "vendor_id": "15b3",
+                "product_id": "101e",
+                "physical_network": None,
+                "remote_managed": "true",
+            }
+        ]
+
+    def test_non_dpu_parent_uses_regular_sriov_path(self):
+        step = self._step()
+        compute_machines = [
+            {"system_id": "host-sid", "hostname": "compute-4", "nics": []}
+        ]
+
+        with (
+            patch.object(maas_steps.maas_client, "list_machines", return_value=[]),
+            patch.object(step, "_record_dpu_vfs") as dpu_path,
+            patch.object(maas_steps.nic_utils, "fetch_nics", return_value={"nics": []}),
+            patch.object(maas_steps.nic_utils, "fetch_gpus", return_value={"gpus": []}),
+        ):
+            step._get_pci_config(compute_machines)
+
+        dpu_path.assert_not_called()

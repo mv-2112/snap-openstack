@@ -5,7 +5,7 @@ terraform {
   required_providers {
     juju = {
       source  = "juju/juju"
-      version = "= 1.3.1"
+      version = "= 1.5.6"
     }
   }
 
@@ -95,41 +95,6 @@ resource "juju_integration" "hypervisor-certs" {
 
   application {
     offer_url = var.ca-offer-url
-  }
-}
-
-moved {
-  from = juju_integration.hypervisor-ovn
-  to   = juju_integration.hypervisor-ovn[0]
-}
-
-resource "juju_integration" "hypervisor-ovn" {
-  # Should be deployed if ovn-relay-offer-url set
-  count      = (var.ovn-relay-offer-url != null) ? 1 : 0
-  model_uuid = data.juju_model.machine_model.uuid
-
-  application {
-    name     = juju_application.openstack-hypervisor.name
-    endpoint = "ovsdb-cms"
-  }
-
-  application {
-    offer_url = var.ovn-relay-offer-url
-  }
-}
-
-resource "juju_integration" "hypervisor-ovn-proxy" {
-  # Shouldn't be deployed if ovn-relay-offer-url is set
-  count      = (var.ovn-relay-offer-url == null) ? 1 : 0
-  model_uuid = data.juju_model.machine_model.uuid
-  application {
-    name     = juju_application.openstack-hypervisor.name
-    endpoint = "ovsdb-cms"
-  }
-
-  application {
-    name     = "sunbeam-ovn-proxy"
-    endpoint = "ovsdb-cms"
   }
 }
 

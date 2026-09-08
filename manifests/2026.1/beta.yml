@@ -23,10 +23,6 @@ core:
         channel: 2026.1/beta
         config:
           snap-channel: 2026.1/beta
-      ovn-central-k8s:
-        channel: 26.03/beta
-      ovn-relay-k8s:
-        channel: 26.03/beta
       placement-k8s:
         channel: 2026.1/beta
       sunbeam-clusterd:
@@ -36,11 +32,11 @@ core:
       sunbeam-machine:
         channel: 2026.1/beta
       microceph:
-        channel: squid/stable
+        channel: tentacle/stable
         config:
-          snap-channel: squid/stable
+          snap-channel: tentacle/stable
       microovn:
-        channel: 25.03/stable
+        channel: 26.03/stable
       openstack-network-agents:
         channel: 2026.1/beta
         config:

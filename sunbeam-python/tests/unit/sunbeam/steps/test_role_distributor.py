@@ -5,7 +5,6 @@ from unittest.mock import Mock
 
 import yaml
 
-from sunbeam.core import ovn
 from sunbeam.core.common import ResultType
 from sunbeam.steps.role_distributor import (
     DeployRoleDistributorApplicationStep,
@@ -63,7 +62,7 @@ class TestDeployRoleDistributorApplicationStep:
         }
         assert extra_tfvars["role_distributor_machine_ids"] == ["0"]
 
-    def test_extra_tfvars_does_not_assign_central_for_ovn_k8s(
+    def test_extra_tfvars_groups_dpu_nodes_under_dedicated_application(
         self,
         basic_deployment,
         basic_client,
@@ -72,14 +71,30 @@ class TestDeployRoleDistributorApplicationStep:
         basic_manifest,
         test_model,
     ):
-        basic_deployment.get_ovn_manager.return_value.get_machines.return_value = ["0"]
-        basic_deployment.get_ovn_manager.return_value.get_provider.return_value = (
-            ovn.OvnProvider.OVN_K8S
-        )
+        # Grouping is purely by architecture: non-default archs go to
+        # microovn-<arch>, amd64 goes to the default microovn application,
+        # regardless of is_dpu.
+        basic_deployment.get_ovn_manager.return_value.get_machines.return_value = [
+            "0",
+            "5",
+            "6",
+        ]
         basic_client.cluster.list_nodes_by_role.side_effect = lambda role: {
-            "control": [{"machineid": "0", "role": ["control", "network"]}],
-            "compute": [],
-            "network": [{"machineid": "0", "role": ["control", "network"]}],
+            "control": [{"machineid": "0", "role": ["control"]}],
+            "network": [
+                {
+                    "machineid": "5",
+                    "role": ["network"],
+                    "arch": "arm64",
+                    "is_dpu": True,
+                },
+                {
+                    "machineid": "6",
+                    "role": ["network"],
+                    "arch": "amd64",
+                    "is_dpu": True,
+                },
+            ],
         }.get(role, [])
 
         step = DeployRoleDistributorApplicationStep(
@@ -91,14 +106,18 @@ class TestDeployRoleDistributorApplicationStep:
             "openstack-machines",
         )
 
-        extra_tfvars = step.extra_tfvars()
+        machines = yaml.safe_load(
+            step.extra_tfvars()["charm_role_distributor_config"]["role-mapping"]
+        )["openstack-machines"]
 
-        role_mapping = yaml.safe_load(
-            extra_tfvars["charm_role_distributor_config"]["role-mapping"]
-        )
-        assert role_mapping["openstack-machines"]["microovn"]["machines"] == {
-            "0": {"roles": ["chassis", "gateway"]},
+        assert machines["microovn"]["machines"] == {
+            "0": {"roles": ["chassis", "central"]},
+            "6": {"roles": ["chassis", "gateway"]},
         }
+        assert machines["microovn-arm64"]["machines"] == {
+            "5": {"roles": ["chassis", "gateway"]}
+        }
+        assert "microovn-amd64" not in machines
 
     def test_get_accepted_application_status_allows_waiting(
         self,
@@ -150,9 +169,8 @@ class TestDeployRoleDistributorApplicationStep:
         config = step.extra_tfvars()["charm_role_distributor_config"]
 
         assert config["log-level"] == "DEBUG"
-        assert yaml.safe_load(config["role-mapping"]) == {
-            "openstack-machines": {"microovn": {"machines": {}}}
-        }
+        # No machines means no application blocks to emit.
+        assert yaml.safe_load(config["role-mapping"]) == {"openstack-machines": {}}
 
     def test_is_skip_skips_when_no_microovn_machines(
         self,
